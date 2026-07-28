@@ -4,7 +4,6 @@ import config
 from model import MyModel
 from dataset import getLoader
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
 from datetime import datetime
 from tokenizer import JiebaTokenizer
 
@@ -34,13 +33,10 @@ def train(word2id):
     os.makedirs(config.MODEL_PATH.parent, exist_ok=True)
     writer = SummaryWriter(log_dir=str(config.OUTPUT_DIR / "logs" / datetime.now().strftime('%Y%m%d_%H%M%S')))
     
-    epoch_bar = tqdm(range(config.EPOCHS), desc="Epochs", unit="epoch")
-    for epoch in epoch_bar:
+    for epoch in range(config.EPOCHS):
         loss_avg = 0.0
         num_batches = 0
-        batch_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.EPOCHS}",
-                         leave=False)
-        for batch, target in batch_bar:
+        for batch, target in train_loader:
             batch = batch.to(device)
             target = target.to(device)
             optimizer.zero_grad()
@@ -52,13 +48,11 @@ def train(word2id):
             optimizer.step()
             loss_avg += loss.item()
             num_batches += 1
-            batch_bar.set_postfix(loss=f"{loss.item():.4f}")
         avg_loss = loss_avg / num_batches if num_batches else 0.0
         scheduler.step()
         writer.add_scalar('Loss/train', avg_loss, epoch)
         writer.add_scalar('LR', optimizer.param_groups[0]['lr'], epoch)
-        epoch_bar.set_postfix(avg_loss=f"{avg_loss:.4f}",
-                              lr=f"{optimizer.param_groups[0]['lr']:.6f}")
+        print(f"Epoch {epoch+1}/{config.EPOCHS} | avg_loss: {avg_loss:.4f} | lr: {optimizer.param_groups[0]['lr']:.6f}")
         if avg_loss < loss_value:
             loss_value = avg_loss
             torch.save(model.state_dict(), config.MODEL_PATH)
