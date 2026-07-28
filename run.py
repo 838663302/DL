@@ -30,7 +30,8 @@ def train(word2id):
         model = torch.nn.DataParallel(model)
     loss_func = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    # 指数衰减：每轮LR×0.94，平滑下降，50轮后约为初始值的4.5%（0.002→0.00009）
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.94)
     model.train()
     loss_value = float("inf")
     # 数据直接常驻GPU，训练循环中无CPU取数与拷贝开销
