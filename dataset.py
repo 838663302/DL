@@ -19,11 +19,35 @@ class MyDataSet(Dataset):
 
 
 
-def getLoader(isTrain=True):
+class InMemoryLoader:
+    """数据常驻GPU的轻量loader：每个epoch打乱索引后直接切片，无DataLoader的逐条取数/拼接/拷贝开销"""
+    def __init__(self, inputs, targets, batch_size, shuffle=True):
+        self.inputs = inputs
+        self.targets = targets
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+
+    def __len__(self):
+        return (len(self.targets) + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        n = len(self.targets)
+        if self.shuffle:
+            idx = torch.randperm(n, device=self.inputs.device)
+        else:
+            idx = torch.arange(n, device=self.inputs.device)
+        for s in range(0, n, self.batch_size):
+            j = idx[s:s + self.batch_size]
+            yield self.inputs[j], self.targets[j]
+
+
+def getLoader(isTrain=True, device=None):
     dataset = MyDataSet(config.DATASET_DIR / (f"train_data_set.jsonl" if isTrain else "test_data_set.jsonl"))
-    # 数据已全部在内存张量中，无IO开销，num_workers=0避免子进程通信反而拖慢
-    return DataLoader(dataset, batch_size=config.BATCH_SIZE, shuffle=True,
-                      num_workers=0, pin_memory=torch.cuda.is_available())
+    inputs, targets = dataset.inputs, dataset.targets
+    # 整个数据集一次性搬到GPU常驻（训练集约140MB，显存完全装得下），训练循环零CPU参与
+    if device is not None:
+        inputs, targets = inputs.to(device), targets.to(device)
+    return InMemoryLoader(inputs, targets, config.BATCH_SIZE, shuffle=isTrain)
 
 if __name__ == "__main__":
     train_loader = getLoader(True)

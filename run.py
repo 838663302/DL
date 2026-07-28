@@ -12,6 +12,7 @@ device = torch.device(
     else "mps" if torch.backends.mps.is_available()
     else "cpu"
 )
+print(f"训练设备: {device}")
 
 def read_json():
     with open(config.DATASET_DIR / "vocab.txt", "r", encoding="utf-8") as f:
@@ -22,16 +23,13 @@ def read_json():
 
 def train(word2id):
     model = MyModel(len(word2id)).to(device)
-    # 多卡并行：Kaggle T4 x2 环境下自动把每个batch切分到两块GPU上计算
-    if torch.cuda.device_count() > 1:
-        print(f"检测到 {torch.cuda.device_count()} 块GPU，启用 DataParallel 并行训练")
-        model = torch.nn.DataParallel(model)
     loss_func = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
     model.train()
     loss_value = float("inf")
-    train_loader = getLoader(True)
+    # 数据直接常驻GPU，训练循环中无CPU取数与拷贝开销
+    train_loader = getLoader(True, device=device)
 
     # 确保模型保存目录存在
     os.makedirs(config.MODEL_PATH.parent, exist_ok=True)
@@ -41,8 +39,6 @@ def train(word2id):
         loss_avg = 0.0
         num_batches = 0
         for batch, target in train_loader:
-            batch = batch.to(device)
-            target = target.to(device)
             optimizer.zero_grad()
             output = model(batch)
             # output: (batch_size, vocab_size), target: (batch_size)
@@ -59,9 +55,7 @@ def train(word2id):
         print(f"Epoch {epoch+1}/{config.EPOCHS} | avg_loss: {avg_loss:.4f} | lr: {optimizer.param_groups[0]['lr']:.6f}")
         if avg_loss < loss_value:
             loss_value = avg_loss
-            # DataParallel包装后真实模型在model.module中，保存它以保证单卡也能加载
-            raw_model = model.module if isinstance(model, torch.nn.DataParallel) else model
-            torch.save(raw_model.state_dict(), config.MODEL_PATH)
+            torch.save(model.state_dict(), config.MODEL_PATH)
     writer.close()
 
 def predict(input_str, model):
@@ -85,7 +79,7 @@ def predict_batch(input_batch, model):
     return topk_values, topk_indices
 
 def evalute(model):
-    test_loader = getLoader(False)
+    test_loader = getLoader(False, device=device)
     top_value = 0
     topk_value = 0
     total = 0
