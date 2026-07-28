@@ -20,7 +20,9 @@ class MyDataSet(Dataset):
 
 def getLoader(isTrain=True):
     dataset = MyDataSet(config.DATASET_DIR / (f"train_data_set.jsonl" if isTrain else "test_data_set.jsonl"))
-    return DataLoader(dataset, batch_size=config.BATCH_SIZE, shuffle=True)
+    # num_workers: 子进程预加载数据；pin_memory: 锁页内存加速CPU到GPU的拷贝（仅GPU环境启用）
+    return DataLoader(dataset, batch_size=config.BATCH_SIZE, shuffle=True,
+                      num_workers=2, pin_memory=torch.cuda.is_available())
 
 if __name__ == "__main__":
     train_loader = getLoader(True)

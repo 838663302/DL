@@ -11,7 +11,7 @@ else:
 
 DATASET_DIR = BASE_DIR / "data"
 WINDOW_SIZE = 5
-BATCH_SIZE = 42
+BATCH_SIZE = 256  # 双卡并行时每卡分到一半，调大以提高GPU利用率
 EMBEDDING_DIM = 128
 HIDDEN_SIZE = 256
 LR = 0.001
