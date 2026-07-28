@@ -1,9 +1,9 @@
-import os
 from pathlib import Path
 
 # Kaggle环境检测：输入数据在/kaggle/input（只读），输出必须写到/kaggle/working
 if Path('/kaggle/input').exists():
-    BASE_DIR = Path(os.environ.get('KAGGLE_INPUT', '/kaggle/input'))
+    # 数据集实际挂载路径（线上实测）
+    BASE_DIR = Path('/kaggle/input/datasets/xiaonanhaiaichixigua/reviewdata')
     OUTPUT_DIR = Path('/kaggle/working')
 else:
     BASE_DIR = Path(__file__).parent.resolve()
