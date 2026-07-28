@@ -1,0 +1,110 @@
+import torch
+import os
+import config
+from model import MyModel
+from dataset import getLoader
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+from datetime import datetime
+from tokenizer import JiebaTokenizer
+
+device = torch.device(
+    "cuda" if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available()
+    else "cpu"
+)
+
+def read_json():
+    with open(config.DATASET_DIR / "vocab.txt", "r", encoding="utf-8") as f:
+        vocab_list = [vocab.strip() for vocab in f.readlines()]
+    word2id = {word: i for i, word in enumerate(vocab_list)}
+    id2word = {i: word for i, word in enumerate(vocab_list)}
+    return word2id, id2word
+
+def train(word2id):
+    model = MyModel(len(word2id)).to(device)
+    loss_func = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    model.train()
+    loss_value = float("inf")
+    train_loader = getLoader(True)
+
+    # 确保模型保存目录存在
+    os.makedirs(config.MODEL_PATH.parent, exist_ok=True)
+    writer = SummaryWriter(log_dir=str(config.OUTPUT_DIR / "logs" / datetime.now().strftime('%Y%m%d_%H%M%S')))
+    
+    epoch_bar = tqdm(range(config.EPOCHS), desc="Epochs", unit="epoch")
+    for epoch in epoch_bar:
+        loss_avg = 0.0
+        num_batches = 0
+        batch_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.EPOCHS}",
+                         leave=False)
+        for batch, target in batch_bar:
+            batch = batch.to(device)
+            target = target.to(device)
+            optimizer.zero_grad()
+            output = model(batch)
+            # output: (batch_size, vocab_size), target: (batch_size)
+            loss = loss_func(output, target)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            loss_avg += loss.item()
+            num_batches += 1
+            batch_bar.set_postfix(loss=f"{loss.item():.4f}")
+        avg_loss = loss_avg / num_batches if num_batches else 0.0
+        scheduler.step()
+        writer.add_scalar('Loss/train', avg_loss, epoch)
+        writer.add_scalar('LR', optimizer.param_groups[0]['lr'], epoch)
+        epoch_bar.set_postfix(avg_loss=f"{avg_loss:.4f}",
+                              lr=f"{optimizer.param_groups[0]['lr']:.6f}")
+        if avg_loss < loss_value:
+            loss_value = avg_loss
+            torch.save(model.state_dict(), config.MODEL_PATH)
+    writer.close()
+
+def predict(input_str, model):
+    tokenizer = JiebaTokenizer.from_vocab(config.DATASET_DIR / "vocab.txt")
+    input_batch = tokenizer.encode(input_str)
+    input_batch = torch.tensor(input_batch, dtype=torch.long).unsqueeze(0)
+    topk_values, topk_indices = predict_batch(input_batch, model)
+
+    indices = topk_indices[0].tolist()
+    print(f"输入: {input_str}")
+    words = [tokenizer.id2word[idx] for idx in indices]
+    for idx, word in zip(indices, words):
+        print(f"  {word} ({idx})")
+    return words
+
+def predict_batch(input_batch, model):
+    model.eval()
+    with torch.no_grad():
+        output = model(input_batch.to(device))
+        topk_values, topk_indices = torch.topk(output, k=5, dim=1)
+    return topk_values, topk_indices
+
+def evalute(model):
+    test_loader = getLoader(False)
+    top_value = 0
+    topk_value = 0
+    total = 0
+    for batch, targets in test_loader:
+        _, topk_indices = predict_batch(batch, model)
+        targets = targets.to(topk_indices.device)  
+        total += targets.size(0)
+
+        # top-1：第 0 列 == target
+        top_value  += (topk_indices[:, 0] == targets).sum().item()
+        # top-5：广播比较 (B,5) vs (B,1)，每行是否命中 target
+        topk_value += (topk_indices == targets.unsqueeze(1)).any(dim=1).sum().item()
+    print(f"Top-1 Accuracy: {top_value / total:.4f}")
+    print(f"Top-5 Accuracy: {topk_value / total:.4f}")
+
+    
+if __name__ == "__main__":
+    word2id, id2word = read_json()
+    # model = MyModel(len(word2id)).to(device)
+    # model.load_state_dict(torch.load(config.MODEL_PATH))
+    
+    train(word2id)
