@@ -41,7 +41,8 @@ def train(word2id):
     writer = SummaryWriter(log_dir=str(config.OUTPUT_DIR / "logs" / datetime.now().strftime('%Y%m%d_%H%M%S')))
     
     for epoch in range(config.EPOCHS):
-        loss_avg = 0.0
+        # loss在GPU上累加，每轮只在结尾.item()同步一次，避免每步强制CPU/GPU同步
+        loss_sum = torch.zeros(1, device=device)
         num_batches = 0
         for batch, target in train_loader:
             optimizer.zero_grad()
@@ -51,9 +52,9 @@ def train(word2id):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            loss_avg += loss.item()
+            loss_sum += loss.detach()
             num_batches += 1
-        avg_loss = loss_avg / num_batches if num_batches else 0.0
+        avg_loss = (loss_sum / num_batches).item() if num_batches else 0.0
         scheduler.step()
         writer.add_scalar('Loss/train', avg_loss, epoch)
         writer.add_scalar('LR', optimizer.param_groups[0]['lr'], epoch)
