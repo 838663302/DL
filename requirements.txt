@@ -1,0 +1,17 @@
+# 深度学习框架
+torch==2.13.0
+tensorboard==2.21.0
+
+# 数据处理
+numpy==2.5.1
+pandas==3.0.5
+scikit-learn==1.9.0
+
+# 中文分词
+jieba==0.42.1
+
+# 英文分词（仅 tokenizer.py 中的 ENTokenizer 使用，首次使用需执行 nltk.download('punkt_tab') 下载分词数据）
+nltk>=3.8
+
+# 工具
+tqdm==4.70.0
