@@ -9,3 +9,4 @@
 
 jieba==0.42.1
 nltk>=3.8
+datasets>=3.0

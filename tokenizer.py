@@ -21,8 +21,12 @@ class Tokenizer(ABC):
         """子类必须实现此方法，定义分词逻辑"""
         pass
 
-    def encode(self, sentence):
-        return [self.word2id.get(token, self.oov_id) for token in self.tokenize(sentence)]
+    def encode(self, sentence, sos_eos=False):
+        ids = [self.word2id.get(token, self.oov_id) for token in self.tokenize(sentence)]
+        # 可选在首尾加上句首/句尾标记（解码端目标序列需要）
+        if sos_eos:
+            ids = [self.sos_id] + ids + [self.eos_id]
+        return ids
     
     @classmethod
     def build_vocab(cls, sentences, path):
@@ -45,6 +49,13 @@ class ENTokenizer(Tokenizer):
     def tokenize(cls, sentence):
         from nltk import word_tokenize
         return word_tokenize(sentence)
+    
+    def decode(self, ids):
+        from nltk.tokenize.treebank import TreebankWordDetokenizer
+        tokens = [self.id2word.get(i, self.oov) for i in ids]
+        # 使用 nltk 的 detokenizer 将 token 列表组合成句子
+        # 正确处理标点符号和空格
+        return TreebankWordDetokenizer().detokenize(tokens)
 
 class ZHTokenizer(Tokenizer):
     @classmethod

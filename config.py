@@ -17,3 +17,20 @@ HIDDEN_SIZE = 256
 LR = 0.002  # 随batch调大同步上调
 EPOCHS = 50
 MODEL_PATH = OUTPUT_DIR / "model.pth"
+MAX_SEQ_LEN = 128  # 最大序列长度
+
+# 词汇表路径
+ZH_VOCAB_PATH = DATASET_DIR / "iwslt_train_zh_vocab.txt"
+EN_VOCAB_PATH = DATASET_DIR / "iwslt_train_en_vocab.txt"
+
+# 检查点目录
+CHECKPOINT_DIR = OUTPUT_DIR / "checkpoints"
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Transformer模型参数
+NHEAD = 8  # 多头注意力头数
+NUM_ENCODER_LAYERS = 6  # 编码器层数
+NUM_DECODER_LAYERS = 6  # 解码器层数
+DIM_FEEDFORWARD = 512  # 前馈网络维度（通常为d_model*4）
+DROPOUT = 0.1  # Dropout比率
+ACTIVATION = 'relu'  # 激活函数
