@@ -1,6 +1,9 @@
+import os
+# 必须在import torch之前设置：启用CUDA显存扩展段，减少碎片化导致的OOM
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+
 import torch
 import torch.nn as nn
-import os
 import config
 from model import Translator
 from dataset_seq2seq import get_dataloader

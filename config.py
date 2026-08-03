@@ -11,10 +11,10 @@ else:
 
 DATASET_DIR = BASE_DIR / "data"
 WINDOW_SIZE = 5
-BATCH_SIZE = 512  # 双卡并行时每卡分到一半，调大以提高GPU利用率并减少每epoch的迭代次数
+BATCH_SIZE = 64  # Transformer的logits是(batch×seq×vocab)量级，512过大导致OOM，调小为64
 EMBEDDING_DIM = 128
 HIDDEN_SIZE = 256
-LR = 0.002  # 随batch调大同步上调
+LR = 0.001  # batch调小后学习率同步下调，保持收敛稳定
 EPOCHS = 50
 MODEL_PATH = OUTPUT_DIR / "model.pth"
 MAX_SEQ_LEN = 128  # 最大序列长度

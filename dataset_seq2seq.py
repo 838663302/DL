@@ -21,6 +21,10 @@ def pad_collate(batch):
     input_batch, target_batch = zip(*batch)
     zh_tokenizer = ZHTokenizer.from_vocab(config.ZH_VOCAB_PATH)
     en_tokenizer = ENTokenizer.from_vocab(config.EN_VOCAB_PATH)
+    # 截断到MAX_SEQ_LEN，防止batch内超长序列把padding长度撑爆导致显存溢出
+    # zh截到MAX_SEQ_LEN；en带sos/eos，截到MAX_SEQ_LEN+1保证切分后两边都≤MAX_SEQ_LEN
+    input_batch = [seq[:config.MAX_SEQ_LEN] for seq in input_batch]
+    target_batch = [seq[:config.MAX_SEQ_LEN + 1] for seq in target_batch]
     input_batch = torch.nn.utils.rnn.pad_sequence(input_batch, batch_first=True, padding_value=zh_tokenizer.pad_id)
     target_batch = torch.nn.utils.rnn.pad_sequence(target_batch, batch_first=True, padding_value=en_tokenizer.pad_id)
     return input_batch, target_batch
