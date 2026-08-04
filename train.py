@@ -29,11 +29,6 @@ def train():
         zh_pad_id=zhTokenizer.pad_id,
         en_pad_id=enTokenizer.pad_id
     ).to(device)
-    # 多卡：DataParallel自动把batch对半切分到每块GPU，各自前向后汇总梯度
-    use_dp = torch.cuda.device_count() > 1
-    if use_dp:
-        print(f"检测到 {torch.cuda.device_count()} 块GPU，启用 DataParallel")
-        model = torch.nn.DataParallel(model)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
     criterion = nn.CrossEntropyLoss(ignore_index=enTokenizer.pad_id)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.94)
@@ -46,9 +41,7 @@ def train():
 
         if loss_value > loss_batch.item():
             loss_value = loss_batch.item()
-            # DataParallel包装后真实模型在model.module中，保存它以保证单卡也能加载
-            raw_model = model.module if use_dp else model
-            torch.save(raw_model.state_dict(), os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
+            torch.save(model.state_dict(), os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
 
 def train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer):
     model.train()

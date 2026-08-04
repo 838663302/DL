@@ -11,10 +11,12 @@ else:
 
 DATASET_DIR = BASE_DIR / "data"
 WINDOW_SIZE = 5
-BATCH_SIZE = 128  # DataParallel下每卡分到一半(64)，等效batch=128；单卡T4也装得下
+# DataParallel下GPU0要gather完整batch并做loss+backward，显存压力=单卡跑整个batch
+# 128时反向传播额外分配3.28GB梯度缓冲区导致OOM，降为64
+BATCH_SIZE = 64
 EMBEDDING_DIM = 128
 HIDDEN_SIZE = 256
-LR = 0.0015  # 等效batch从64翻倍到128，学习率小幅上调
+LR = 0.001  # 等效batch回落，学习率同步回调
 EPOCHS = 50
 MODEL_PATH = OUTPUT_DIR / "model.pth"
 MAX_SEQ_LEN = 128  # 最大序列长度
