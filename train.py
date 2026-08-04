@@ -39,8 +39,8 @@ def train():
         print(f"Epoch {epoch+1}, Loss: {loss_batch}")
         scheduler.step()
 
-        if loss_value > loss_batch.item():
-            loss_value = loss_batch.item()
+        if loss_value > loss_batch:
+            loss_value = loss_batch
             torch.save(model.state_dict(), os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
 
 def train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer):
