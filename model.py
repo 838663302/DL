@@ -33,8 +33,20 @@ class Translator(nn.Module):
         self.pos_encoder = PostionalEncoder(d_model, config.MAX_SEQ_LEN)
         self.transformer = nn.Transformer(d_model, config.NHEAD, config.NUM_ENCODER_LAYERS, config.NUM_DECODER_LAYERS, config.DIM_FEEDFORWARD, config.DROPOUT, config.ACTIVATION, batch_first=True)
         self.fc = nn.Linear(d_model, en_vocab_size)
+        # 保存pad_id，forward内部生成padding mask需要
+        self.zh_pad_id = zh_pad_id
+        self.en_pad_id = en_pad_id
 
-    def forward(self, src, tgt, src_padding_mask, tgt_mask, memory_key_padding_mask):
+    def forward(self, combined):
+        # combined: (batch, 2, seq_len)，[0]=src, [1]=tgt
+        # DataParallel只会切分第一个输入参数，因此把src/tgt打包成单个张量，
+        # 三个mask都在模型内部基于切分后的输入生成，保证双卡切分后形状自洽
+        src = combined[:, 0]
+        tgt = combined[:, 1]
+        src_padding_mask = (src == self.zh_pad_id)
+        memory_key_padding_mask = (src == self.zh_pad_id)
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(
+            tgt.size(1), device=tgt.device, dtype=torch.float32)
         memory = self.encode(src, src_padding_mask)
         output = self.decode(tgt, tgt_mask, memory, memory_key_padding_mask)
         # output shape: (batch_size, seq_len, en_vocab_size)

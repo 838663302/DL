@@ -29,35 +29,43 @@ def train():
         zh_pad_id=zhTokenizer.pad_id,
         en_pad_id=enTokenizer.pad_id
     ).to(device)
+    # 多卡：DataParallel自动把batch对半切分到每块GPU，各自前向后汇总梯度
+    use_dp = torch.cuda.device_count() > 1
+    if use_dp:
+        print(f"检测到 {torch.cuda.device_count()} 块GPU，启用 DataParallel")
+        model = torch.nn.DataParallel(model)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
     criterion = nn.CrossEntropyLoss(ignore_index=enTokenizer.pad_id)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.94)
     loss_value = float("inf")
     
     for epoch in range(config.EPOCHS):
-        loss_batch = train_one_epoch(model, dataloader, optimizer, criterion, zhTokenizer, enTokenizer)
+        loss_batch = train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer)
         print(f"Epoch {epoch+1}, Loss: {loss_batch}")
         scheduler.step()
 
         if loss_value > loss_batch.item():
             loss_value = loss_batch.item()
-            torch.save(model.state_dict(), os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
+            # DataParallel包装后真实模型在model.module中，保存它以保证单卡也能加载
+            raw_model = model.module if use_dp else model
+            torch.save(raw_model.state_dict(), os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
 
-def train_one_epoch(model, dataloader, optimizer, criterion, zhTokenizer, enTokenizer):
+def train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer):
     model.train()
     total_loss = 0.0
     num_batches = 0
     
     for batch, target in dataloader:
         batch = batch.to(device)
-        input_targets = target[:, :-1].to(device)
-        output_targets = target[:, 1:].to(device)
+        target = target.to(device)
+        input_targets = target[:, :-1]
+        output_targets = target[:, 1:]
         
-        src_padding_mask = (batch == zhTokenizer.pad_id)
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(input_targets.size(1)).to(device)
-        memory_key_padding_mask = (batch == zhTokenizer.pad_id)
+        # DataParallel只切分第一个参数，所以把src/tgt打包成单个张量 (batch, 2, seq)，
+        # 切分后每卡拿到 (batch/2, 2, seq)，mask在模型内部基于切分后的输入生成
+        combined = torch.stack([batch, input_targets], dim=1)
         
-        output = model(batch, input_targets, src_padding_mask, tgt_mask, memory_key_padding_mask)
+        output = model(combined)
         # output shape: (batch_size, seq_len, en_vocab_size)
         # output_targets shape: (batch_size, seq_len)
         loss = criterion(output.reshape(-1, output.size(-1)), output_targets.reshape(-1))

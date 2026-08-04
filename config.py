@@ -11,10 +11,10 @@ else:
 
 DATASET_DIR = BASE_DIR / "data"
 WINDOW_SIZE = 5
-BATCH_SIZE = 64  # Transformer的logits是(batch×seq×vocab)量级，512过大导致OOM，调小为64
+BATCH_SIZE = 128  # DataParallel下每卡分到一半(64)，等效batch=128；单卡T4也装得下
 EMBEDDING_DIM = 128
 HIDDEN_SIZE = 256
-LR = 0.001  # batch调小后学习率同步下调，保持收敛稳定
+LR = 0.0015  # 等效batch从64翻倍到128，学习率小幅上调
 EPOCHS = 50
 MODEL_PATH = OUTPUT_DIR / "model.pth"
 MAX_SEQ_LEN = 128  # 最大序列长度
