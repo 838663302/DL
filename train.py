@@ -87,14 +87,14 @@ def train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer, device
         total_loss += loss.item()
         num_batches += 1
 
-        if step % gpu_monitor_interval == 0 and device.index == 0:
-            try:
-                util = subprocess.check_output(
-                    "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader",
-                    shell=True).decode().strip().replace("\n", " | ")
-            except Exception:
-                util = "nvidia-smi 不可用"
-            print(f"  step {step}: {util}")
+        # if step % gpu_monitor_interval == 0 and device.index == 0:
+        #     try:
+        #         util = subprocess.check_output(
+        #             "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader",
+        #             shell=True).decode().strip().replace("\n", " | ")
+        #     except Exception:
+        #         util = "nvidia-smi 不可用"
+        #     print(f"  step {step}: {util}")
 
     return total_loss / num_batches if num_batches > 0 else float('inf')
 
