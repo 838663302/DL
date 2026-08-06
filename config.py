@@ -25,14 +25,14 @@ MAX_SEQ_LEN = 128  # 最大序列长度
 ZH_VOCAB_PATH = DATASET_DIR / "iwslt_train_zh_vocab.txt"
 EN_VOCAB_PATH = DATASET_DIR / "iwslt_train_en_vocab.txt"
 
-# 检查点目录
-CHECKPOINT_DIR = OUTPUT_DIR / "checkpoints"
+# 检查点目录：直接使用输出根目录，不再单独建 checkpoints 子目录
+CHECKPOINT_DIR = OUTPUT_DIR
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Transformer模型参数
-NHEAD = 8  # 多头注意力头数
-NUM_ENCODER_LAYERS = 6  # 编码器层数
-NUM_DECODER_LAYERS = 6  # 解码器层数
-DIM_FEEDFORWARD = 512  # 前馈网络维度（通常为d_model*4）
+NHEAD = 4  # 多头注意力头数（d_model=128 时每头 32 维）
+NUM_ENCODER_LAYERS = 3  # 编码器层数
+NUM_DECODER_LAYERS = 3  # 解码器层数
+DIM_FEEDFORWARD = 256  # 前馈网络维度（缩小版取 2*d_model）
 DROPOUT = 0.1  # Dropout比率
 ACTIVATION = 'relu'  # 激活函数

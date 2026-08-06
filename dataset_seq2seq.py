@@ -1,4 +1,5 @@
 from torch.utils.data import Dataset, DataLoader
+import os
 import torch
 import pandas as pd
 import config
@@ -52,7 +53,11 @@ def pad_collate(batch):
     return input_batch, target_batch
 
 
-def get_dataloader(batch_size, shuffle, is_train=True, rank=None, world_size=None):
+def get_dataloader(batch_size, shuffle, is_train=True, rank=None, world_size=None, num_workers=None):
+    if num_workers is None:
+        # Windows 下多进程 DataLoader worker 需要 __main__ 保护，默认 0；
+        # Linux/Kaggle 下用 2 个子进程并行加载和 padding，缓解 CPU 瓶颈
+        num_workers = 0 if os.name == "nt" else 2
     if is_train:
         file_path = config.DATASET_DIR / "iwslt_train_tokenized.jsonl"
     else:
@@ -63,8 +68,10 @@ def get_dataloader(batch_size, shuffle, is_train=True, rank=None, world_size=Non
     if rank is not None and world_size is not None:
         sampler = DistributedSampler(
             dataset, num_replicas=world_size, rank=rank, shuffle=shuffle)
-        return DataLoader(dataset, batch_size=batch_size, sampler=sampler, collate_fn=pad_collate)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=pad_collate)
+        return DataLoader(dataset, batch_size=batch_size, sampler=sampler,
+                          collate_fn=pad_collate, num_workers=num_workers)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
+                      collate_fn=pad_collate, num_workers=num_workers)
 
 if __name__ == "__main__":
     dataloader = get_dataloader(batch_size=config.BATCH_SIZE, shuffle=True, is_train=False)

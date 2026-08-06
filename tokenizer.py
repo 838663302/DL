@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-import jieba
 
 class Tokenizer(ABC):
     oov = "<unk>"
@@ -60,9 +59,11 @@ class ENTokenizer(Tokenizer):
 class ZHTokenizer(Tokenizer):
     @classmethod
     def tokenize(cls, sentence):
+        import jieba  # 懒加载：只在分词时初始化 jieba 词典，避免训练进程无谓开销
         return jieba.lcut(sentence)
 
 class JiebaTokenizer(Tokenizer):
     @classmethod
     def tokenize(cls, sentence):
+        import jieba
         return jieba.lcut(sentence)
