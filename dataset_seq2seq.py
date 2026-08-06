@@ -58,6 +58,11 @@ def get_dataloader(batch_size, shuffle, is_train=True, rank=None, world_size=Non
         # Windows 下多进程 DataLoader worker 需要 __main__ 保护，默认 0；
         # Linux/Kaggle 下用 2 个子进程并行加载和 padding，缓解 CPU 瓶颈
         num_workers = 0 if os.name == "nt" else 2
+    # num_workers>0 时启用常驻 worker 与预取：worker 不随 epoch 销毁重建，
+    # 每个 worker 预取 2 个 batch，隐藏加载延迟
+    loader_kwargs = {}
+    if num_workers > 0:
+        loader_kwargs = dict(persistent_workers=True, prefetch_factor=2)
     if is_train:
         file_path = config.DATASET_DIR / "iwslt_train_tokenized.jsonl"
     else:
@@ -69,9 +74,9 @@ def get_dataloader(batch_size, shuffle, is_train=True, rank=None, world_size=Non
         sampler = DistributedSampler(
             dataset, num_replicas=world_size, rank=rank, shuffle=shuffle)
         return DataLoader(dataset, batch_size=batch_size, sampler=sampler,
-                          collate_fn=pad_collate, num_workers=num_workers)
+                          collate_fn=pad_collate, num_workers=num_workers, **loader_kwargs)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
-                      collate_fn=pad_collate, num_workers=num_workers)
+                      collate_fn=pad_collate, num_workers=num_workers, **loader_kwargs)
 
 if __name__ == "__main__":
     dataloader = get_dataloader(batch_size=config.BATCH_SIZE, shuffle=True, is_train=False)

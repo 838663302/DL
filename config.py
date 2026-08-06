@@ -17,7 +17,7 @@ BATCH_SIZE = 64
 EMBEDDING_DIM = 128
 HIDDEN_SIZE = 256
 LR = 0.001  # 等效batch回落，学习率同步回调
-EPOCHS = 50
+EPOCHS = 1
 MODEL_PATH = OUTPUT_DIR / "model.pth"
 MAX_SEQ_LEN = 128  # 最大序列长度
 
