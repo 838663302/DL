@@ -1,4 +1,5 @@
 import os
+import subprocess
 # 必须在import torch之前设置：启用CUDA显存扩展段，减少碎片化导致的OOM
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 # Kaggle 等云环境 T4 之间 NCCL P2P 通信可能卡死，禁用 P2P 走更稳妥的传输路径
@@ -66,8 +67,10 @@ def train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer, device
     model.train()
     total_loss = 0.0
     num_batches = 0
+    # 每多少步打印一次 GPU 利用率（观察 CPU/GPU 瓶颈用，仅在 rank0 打印避免刷屏）
+    gpu_monitor_interval = 200
 
-    for batch, target in dataloader:
+    for step, (batch, target) in enumerate(dataloader):
         batch = batch.to(device)
         target = target.to(device)
         input_targets = target[:, :-1]
@@ -83,6 +86,15 @@ def train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer, device
 
         total_loss += loss.item()
         num_batches += 1
+
+        if step % gpu_monitor_interval == 0 and device.index == 0:
+            try:
+                util = subprocess.check_output(
+                    "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader",
+                    shell=True).decode().strip().replace("\n", " | ")
+            except Exception:
+                util = "nvidia-smi 不可用"
+            print(f"  step {step}: {util}")
 
     return total_loss / num_batches if num_batches > 0 else float('inf')
 
