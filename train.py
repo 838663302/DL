@@ -39,12 +39,18 @@ def train(rank, world_size):
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.94)
     loss_value = float("inf")
 
+    # 只在 rank=0 创建 TensorBoard writer，避免两个进程重复写日志目录
+    writer = SummaryWriter(log_dir=config.OUTPUT_DIR / "runs") if rank == 0 else None
+
     for epoch in range(config.EPOCHS):
         # 每个 epoch 重新打乱数据，保证各卡样本分配随 epoch 变化
         dataloader.sampler.set_epoch(epoch)
         loss_batch = train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer, device)
         if rank == 0:
             print(f"Epoch {epoch+1}, Loss: {loss_batch}")
+            # 记录每个 epoch 的平均损失和学习率
+            writer.add_scalar("loss/train", loss_batch, epoch)
+            writer.add_scalar("lr", scheduler.get_last_lr()[0], epoch)
         scheduler.step()
 
         if loss_value > loss_batch:
@@ -52,6 +58,9 @@ def train(rank, world_size):
             if rank == 0:
                 # DDP 包装后取内部模型保存，避免保存带 module. 前缀的状态字典
                 torch.save(model.module.state_dict(), os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
+
+    if writer is not None:
+        writer.close()
 
 def train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer, device):
     model.train()
@@ -110,7 +119,9 @@ def predict_batch(input_batch, model, zhTokenizer, enTokenizer):
 def init_process(rank, world_size, fn):
     """每个子进程的入口：初始化进程组、设置设备、运行训练、销毁进程组"""
     torch.cuda.set_device(rank)
-    # env:// 方式通过 mp.spawn 注入的 RANK/WORLD_SIZE 等环境变量建立进程组
+    # mp.spawn 不会注入 MASTER_ADDR/MASTER_PORT，必须手动指定（单机多卡用回环地址）
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = '29500'
     dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
     fn(rank, world_size)
     dist.destroy_process_group()
