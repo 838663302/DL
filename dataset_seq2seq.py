@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 import config
 from tokenizer import ZHTokenizer, ENTokenizer
+from torch.utils.data.distributed  import DistributedSampler
 
 
 class Seq2SeqDataset(Dataset):
@@ -51,12 +52,19 @@ def pad_collate(batch):
     return input_batch, target_batch
 
 
-def get_dataloader(batch_size, shuffle, is_train=True):
+def get_dataloader(batch_size, shuffle, is_train=True, rank=None, world_size=None):
     if is_train:
         file_path = config.DATASET_DIR / "iwslt_train_tokenized.jsonl"
     else:
         file_path = config.DATASET_DIR / "iwslt_test_tokenized.jsonl"
-    return DataLoader(Seq2SeqDataset(file_path), batch_size=batch_size, shuffle=shuffle, collate_fn=pad_collate)
+    dataset = Seq2SeqDataset(file_path)
+    # DDP 下用 DistributedSampler 做数据分片，每卡拿到不重叠的子集；
+    # 单进程/推理场景 rank 为空时退化为普通 shuffle
+    if rank is not None and world_size is not None:
+        sampler = DistributedSampler(
+            dataset, num_replicas=world_size, rank=rank, shuffle=shuffle)
+        return DataLoader(dataset, batch_size=batch_size, sampler=sampler, collate_fn=pad_collate)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=pad_collate)
 
 if __name__ == "__main__":
     dataloader = get_dataloader(batch_size=config.BATCH_SIZE, shuffle=True, is_train=False)

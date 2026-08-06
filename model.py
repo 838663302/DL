@@ -37,12 +37,7 @@ class Translator(nn.Module):
         self.zh_pad_id = zh_pad_id
         self.en_pad_id = en_pad_id
 
-    def forward(self, combined):
-        # combined: (batch, 2, seq_len)，[0]=src, [1]=tgt
-        # DataParallel只会切分第一个输入参数，因此把src/tgt打包成单个张量，
-        # 三个mask都在模型内部基于切分后的输入生成，保证双卡切分后形状自洽
-        src = combined[:, 0]
-        tgt = combined[:, 1]
+    def forward(self, src, tgt):
         src_padding_mask = (src == self.zh_pad_id)
         memory_key_padding_mask = (src == self.zh_pad_id)
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(

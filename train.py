@@ -4,24 +4,26 @@ os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import config
 from model import Translator
 from dataset_seq2seq import get_dataloader
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 from tokenizer import ZHTokenizer, ENTokenizer
 
-device = torch.device(
-    "cuda" if torch.cuda.is_available()
-    else "mps" if torch.backends.mps.is_available()
-    else "cpu"
-)
-print(f"训练设备: {device}")
 
-def train():
+def train(rank, world_size):
+    device = torch.device(f"cuda:{rank}")
     zhTokenizer = ZHTokenizer.from_vocab(config.ZH_VOCAB_PATH)
     enTokenizer = ENTokenizer.from_vocab(config.EN_VOCAB_PATH)
-    dataloader = get_dataloader(batch_size=config.BATCH_SIZE, shuffle=True, is_train=True)
+    dataloader = get_dataloader(
+        batch_size=config.BATCH_SIZE, shuffle=True, is_train=True,
+        rank=rank, world_size=world_size
+    )
     model = Translator(
         zh_vocab_size=zhTokenizer.vocab_size,
         en_vocab_size=enTokenizer.vocab_size,
@@ -29,49 +31,53 @@ def train():
         zh_pad_id=zhTokenizer.pad_id,
         en_pad_id=enTokenizer.pad_id
     ).to(device)
+    model = DDP(model, device_ids=[rank])
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
     criterion = nn.CrossEntropyLoss(ignore_index=enTokenizer.pad_id)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.94)
     loss_value = float("inf")
-    
+
     for epoch in range(config.EPOCHS):
-        loss_batch = train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer)
-        print(f"Epoch {epoch+1}, Loss: {loss_batch}")
+        # 每个 epoch 重新打乱数据，保证各卡样本分配随 epoch 变化
+        dataloader.sampler.set_epoch(epoch)
+        loss_batch = train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer, device)
+        if rank == 0:
+            print(f"Epoch {epoch+1}, Loss: {loss_batch}")
         scheduler.step()
 
         if loss_value > loss_batch:
             loss_value = loss_batch
-            torch.save(model.state_dict(), os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
+            if rank == 0:
+                # DDP 包装后取内部模型保存，避免保存带 module. 前缀的状态字典
+                torch.save(model.module.state_dict(), os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
 
-def train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer):
+def train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer, device):
     model.train()
     total_loss = 0.0
     num_batches = 0
-    
+
     for batch, target in dataloader:
         batch = batch.to(device)
         target = target.to(device)
         input_targets = target[:, :-1]
         output_targets = target[:, 1:]
-        
-        # DataParallel只切分第一个参数，所以把src/tgt打包成单个张量 (batch, 2, seq)，
-        # 切分后每卡拿到 (batch/2, 2, seq)，mask在模型内部基于切分后的输入生成
-        combined = torch.stack([batch, input_targets], dim=1)
-        
-        output = model(combined)
+
+        output = model(batch, input_targets)
         # output shape: (batch_size, seq_len, en_vocab_size)
         # output_targets shape: (batch_size, seq_len)
         loss = criterion(output.reshape(-1, output.size(-1)), output_targets.reshape(-1))
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        
+
         total_loss += loss.item()
         num_batches += 1
-    
+
     return total_loss / num_batches if num_batches > 0 else float('inf')
 
 def predict_batch(input_batch, model, zhTokenizer, enTokenizer):
+    # 推理函数独立于 DDP 训练使用，自行推断设备
+    device = input_batch.device
     model.eval()
     # 创建形状为 (batch_size, 1) 的全零张量，用作解码器初始输入（SOS token）
     input_target = torch.full((input_batch.shape[0], 1), fill_value=enTokenizer.sos_id, dtype=torch.long).to(device)
@@ -98,6 +104,16 @@ def predict_batch(input_batch, model, zhTokenizer, enTokenizer):
 
     generated = torch.cat(generated, dim=1).to(device)
     return generated
-    
+
+def init_process(rank, world_size, fn):
+    """每个子进程的入口：初始化进程组、设置设备、运行训练、销毁进程组"""
+    torch.cuda.set_device(rank)
+    # env:// 方式通过 mp.spawn 注入的 RANK/WORLD_SIZE 等环境变量建立进程组
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    fn(rank, world_size)
+    dist.destroy_process_group()
+
 if __name__ == "__main__":
-    train()
+    world_size = 2
+    print(f"使用 {world_size} 张 GPU 进行 DDP 训练")
+    mp.spawn(init_process, args=(world_size, train), nprocs=world_size)

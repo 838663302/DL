@@ -11,8 +11,8 @@ else:
 
 DATASET_DIR = BASE_DIR / "data"
 WINDOW_SIZE = 5
-# DataParallel下GPU0要gather完整batch并做loss+backward，显存压力=单卡跑整个batch
-# 128时反向传播额外分配3.28GB梯度缓冲区导致OOM，降为64
+# DDP 下每张卡独立跑 batch=64，全局有效 batch = 64 * 2 = 128
+# 每卡显存压力与单卡相同，无需降低
 BATCH_SIZE = 64
 EMBEDDING_DIM = 128
 HIDDEN_SIZE = 256
