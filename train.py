@@ -1,6 +1,8 @@
 import os
 # 必须在import torch之前设置：启用CUDA显存扩展段，减少碎片化导致的OOM
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+# Kaggle 等云环境 T4 之间 NCCL P2P 通信可能卡死，禁用 P2P 走更稳妥的传输路径
+os.environ["NCCL_P2P_DISABLE"] = "1"
 
 import torch
 import torch.nn as nn
