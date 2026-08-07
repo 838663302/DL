@@ -14,10 +14,11 @@ WINDOW_SIZE = 5
 # DDP 下每张卡独立跑 batch=64，全局有效 batch = 64 * 2 = 128
 # 每卡显存压力与单卡相同，无需降低
 BATCH_SIZE = 64
-EMBEDDING_DIM = 128
+EMBEDDING_DIM = 256
 HIDDEN_SIZE = 256
-LR = 0.001  # 等效batch回落，学习率同步回调
-EPOCHS = 30
+LR = 0.001  # Noam 调度的峰值学习率（warmup 结束后达到）
+EPOCHS = 1
+WARMUP_STEPS = 2000  # Noam 调度的 warmup 步数，之后学习率按 1/sqrt(step) 缓慢衰减
 MODEL_PATH = OUTPUT_DIR / "model.pth"
 MAX_SEQ_LEN = 128  # 最大序列长度
 
@@ -30,9 +31,9 @@ CHECKPOINT_DIR = OUTPUT_DIR
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Transformer模型参数
-NHEAD = 4  # 多头注意力头数（d_model=128 时每头 32 维）
+NHEAD = 8  # 多头注意力头数（d_model=256 时每头 32 维，必须整除 d_model）
 NUM_ENCODER_LAYERS = 3  # 编码器层数
 NUM_DECODER_LAYERS = 3  # 解码器层数
-DIM_FEEDFORWARD = 256  # 前馈网络维度（缩小版取 2*d_model）
+DIM_FEEDFORWARD = 1024  # 前馈网络维度（取 4*d_model）
 DROPOUT = 0.1  # Dropout比率
 ACTIVATION = 'relu'  # 激活函数
