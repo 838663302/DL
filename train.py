@@ -179,7 +179,7 @@ def init_process(rank, world_size, fn):
     dist.destroy_process_group()
 
 if __name__ == "__main__":
-    world_size = 2
-    print(f"使用 {world_size} 张 GPU 进行 DDP 训练")
-    mp.spawn(init_process, args=(world_size, train), nprocs=world_size)
-    # predict()
+    # world_size = 2
+    # print(f"使用 {world_size} 张 GPU 进行 DDP 训练")
+    # mp.spawn(init_process, args=(world_size, train), nprocs=world_size)
+    predict()
