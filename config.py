@@ -11,13 +11,14 @@ else:
 
 DATASET_DIR = BASE_DIR / "data"
 WINDOW_SIZE = 5
-# DDP 下每张卡独立跑 batch=64，全局有效 batch = 64 * 2 = 128
-# 每卡显存压力与单卡相同，无需降低
-BATCH_SIZE = 64
+# 窗口模型极小（(batch, 8, 256)），T4 上每卡 batch 512 无显存压力；
+# DDP 下全局有效 batch = 512 * 2 = 1024
+BATCH_SIZE = 512
 EMBEDDING_DIM = 256
 HIDDEN_SIZE = 256
 LR = 0.001  # Noam 调度的峰值学习率（warmup 结束后达到）
-EPOCHS = 50
+# 200 万条滑窗样本高度重叠，50 轮过拟合；15 轮足够收敛
+EPOCHS = 15
 WARMUP_STEPS = 2000  # Noam 调度的 warmup 步数，之后学习率按 1/sqrt(step) 缓慢衰减
 MODEL_PATH = OUTPUT_DIR / "model.pth"
 MAX_SEQ_LEN = 128  # 最大序列长度
