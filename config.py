@@ -11,15 +11,15 @@ else:
 
 DATASET_DIR = BASE_DIR / "data"
 WINDOW_SIZE = 5
-# 词表 93063 极大，logits=(B,8,93063) 是显存大户：
-# B=512 时单张 logits ≈1.5GB，softmax+梯度再翻倍。B=256 安全。
-# DDP 下全局有效 batch = 256 * 2 = 512
-BATCH_SIZE = 256
+# 旧代码全 8 位 logits 时峰值也仅 1.24 GiB，显存余量巨大。
+# 现在只算最后一位 logits + fp16 混合精度，B=512 安全。
+# DDP 下全局有效 batch = 512 * 2 = 1024
+BATCH_SIZE = 512
 EMBEDDING_DIM = 256
 HIDDEN_SIZE = 256
 LR = 0.001  # Noam 调度的峰值学习率（warmup 结束后达到）
 # 200 万条滑窗样本高度重叠，50 轮过拟合；15 轮足够收敛
-EPOCHS = 15
+EPOCHS = 1
 WARMUP_STEPS = 2000  # Noam 调度的 warmup 步数，之后学习率按 1/sqrt(step) 缓慢衰减
 MODEL_PATH = OUTPUT_DIR / "model.pth"
 MAX_SEQ_LEN = 128  # 最大序列长度

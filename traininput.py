@@ -49,6 +49,12 @@ def train(rank, world_size):
         step = max(step, 1)
         return min(step / warmup_steps, 1.0) * (warmup_steps ** 0.5) * (step ** -0.5)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+    # 混合精度：T4 支持 fp16 tensor core，前向/反向减半显存并提速；
+    # CPU 下 enabled=False 自动退化为 fp32，GradScaler 原样通过
+    try:
+        scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
+    except TypeError:
+        scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
     loss_value = float("inf")
 
     # 只在 rank=0 创建 TensorBoard writer，避免两个进程重复写日志目录
@@ -58,7 +64,7 @@ def train(rank, world_size):
         # 每个 epoch 重新打乱数据（仅 DDP 的 DistributedSampler 需要 set_epoch）
         if hasattr(dataloader.sampler, "set_epoch"):
             dataloader.sampler.set_epoch(epoch)
-        loss_batch = train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler)
+        loss_batch = train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler, scaler)
         if rank == 0:
             print(f"Epoch {epoch+1}, Loss: {loss_batch}")
             # 记录每个 epoch 的平均损失和学习率
@@ -75,37 +81,29 @@ def train(rank, world_size):
     if writer is not None:
         writer.close()
 
-def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=None):
+def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=None, scaler=None):
     model.train()
     total_loss = 0.0
     num_batches = 0
-    # 每多少步打印一次 GPU 利用率（观察 CPU/GPU 瓶颈用，仅在 rank0 打印避免刷屏）
-    gpu_monitor_interval = 200
 
     for step, (batch, target) in enumerate(dataloader):
         batch = batch.to(device)
         target = target.to(device)
-        # output shape: (batch_size, vocab_size)，已是最后一位 token 的 logits
-        output = model(batch)
-        loss = criterion(output, target)
+        # 混合精度前向：CUDA 下 fp16 加速，CPU 下自动 fp32
+        with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+            # output shape: (batch_size, vocab_size)，已是最后一位 token 的 logits
+            output = model(batch)
+            loss = criterion(output, target)
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         # Noam 调度按 batch 步数更新
         if scheduler is not None:
             scheduler.step()
 
         total_loss += loss.item()
         num_batches += 1
-
-        # if step % gpu_monitor_interval == 0 and device.index == 0:
-        #     try:
-        #         util = subprocess.check_output(
-        #             "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader",
-        #             shell=True).decode().strip().replace("\n", " | ")
-        #     except Exception:
-        #         util = "nvidia-smi 不可用"
-        #     print(f"  step {step}: {util}")
 
     if torch.cuda.is_available():
         peak = torch.cuda.max_memory_allocated() / 2**30

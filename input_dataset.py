@@ -7,23 +7,26 @@ from torch.utils.data.distributed import DistributedSampler
 
 class InputDataset(Dataset):
     def __init__(self, file_path):
-        self.data = pd.read_json(file_path, lines=True, orient='records')
-        self.input = self.data["input"].tolist()
-        self.target = self.data["target"].tolist()
+        data = pd.read_json(file_path, lines=True, orient='records')
+        self.length = len(data)
+        # 一次性把整列转成预分配大张量：__getitem__ 变纯切片，
+        # 避免每条样本都新建 tensor / 走 Python 循环（200 万条时开销巨大）
+        self.input = torch.tensor(data["input"].tolist(), dtype=torch.long)      # (N, W)
+        self.target = torch.tensor(data["target"].tolist(), dtype=torch.long)    # (N,)
 
     def __len__(self):
-        return len(self.data)
+        return self.length
     
     def __getitem__(self, idx):
-        return torch.tensor(self.input[idx], dtype=torch.long), torch.tensor(self.target[idx], dtype=torch.long)
+        return self.input[idx], self.target[idx]
 
 
 
 def get_dataloader(batch_size, shuffle, is_train=True, rank=None, world_size=None, num_workers=None):
     if num_workers is None:
         # Windows 下多进程 DataLoader worker 需要 __main__ 保护，默认 0；
-        # Linux/Kaggle 下用 2 个子进程并行加载和 padding，缓解 CPU 瓶颈
-        num_workers = 0 if os.name == "nt" else 2
+        # Linux/Kaggle 下用 4 个子进程并行加载，掩盖 200 万样本的加载延迟
+        num_workers = 0 if os.name == "nt" else 4
     # num_workers>0 时启用常驻 worker 与预取：worker 不随 epoch 销毁重建，
     # 每个 worker 预取 2 个 batch，隐藏加载延迟
     loader_kwargs = {}
