@@ -5,7 +5,6 @@ import torch.nn as nn
 from torch.nn.modules.module import _forward_unimplemented
 import config
 
-
 class PostionalEncoder(nn.Module):
     def __init__(self, d_model, max_seq_len):
         super().__init__()
@@ -62,3 +61,32 @@ class Translator(nn.Module):
         # decoded shape: (batch_size, seq_len, d_model)
         # fc_output shape: (batch_size, seq_len, en_vocab_size)
         return self.fc(decoded)
+
+
+class InputMethod(nn.Module):
+    def __init__(self, zh_vocab_size, d_model, zh_pad_id):
+        super().__init__()
+        self.embedding = nn.Embedding(zh_vocab_size, d_model, padding_idx=zh_pad_id)
+        self.postion = PostionalEncoder(d_model, config.MAX_SEQ_LEN)
+        
+        layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=config.NHEAD,
+                                           dim_feedforward=config.DIM_FEEDFORWARD,
+                                           activation=config.ACTIVATION,
+                                           batch_first=True)
+        self.decoder = nn.TransformerEncoder(encoder_layer=layer,
+                                             num_layers=config.NUM_DECODER_LAYERS)
+        self.linear = nn.Linear(d_model, zh_vocab_size)
+        self.zh_pad_id = zh_pad_id
+
+    def forward(self, input):
+        embed = self.embedding(input)
+        embed = self.postion(embed)
+        
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(
+            input.size(1), device=input.device, dtype=torch.bool)
+        
+        tgt_key_padding_mask = (input == self.zh_pad_id)
+     
+        decoded = self.decoder(src=embed, mask=tgt_mask,
+                               src_key_padding_mask=tgt_key_padding_mask)
+        return self.linear(decoded)

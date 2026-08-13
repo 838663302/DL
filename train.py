@@ -107,33 +107,113 @@ def train_one_epoch(model, dataloader, optimizer, criterion, enTokenizer, device
 
     return total_loss / num_batches if num_batches > 0 else float('inf')
 
+def beam_search_decode(model, memory, src_padding_mask, enTokenizer, device, max_len):
+    """批量束搜索。memory: (B, seq_len, d_model)，flat index = b*K + k（第 b 句第 k 束）"""
+    B = memory.shape[0]
+    K = config.BEAM_SIZE
+    alpha = config.LENGTH_PENALTY_ALPHA
+    pad_id, sos_id, eos_id = enTokenizer.pad_id, enTokenizer.sos_id, enTokenizer.eos_id
+
+    memory_flat = memory.repeat_interleave(K, dim=0)      # (B*K, seq_len, d_model)
+    mask_flat = src_padding_mask.repeat_interleave(K, dim=0)  # (B*K, seq_len)
+
+    seqs = torch.full((B * K, 1), sos_id, dtype=torch.long, device=device)   # 初始全为 [sos]
+    cum_log_prob = torch.zeros(B * K, device=device)
+    active = torch.ones(B * K, dtype=torch.bool, device=device)  # True=尚未出 EOS，可继续扩展
+
+    finished = [[] for _ in range(B)]   # 每句的 (tokens(不含sos/eos), log_prob)
+
+    with torch.no_grad():
+        for step in range(max_len):
+            if not active.any():
+                break
+            cur_len = seqs.size(1)
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(cur_len).to(device)
+            logits = model.decode(seqs, tgt_mask, memory_flat, mask_flat)  # (B*K, cur_len, vocab)
+            log_probs = torch.log_softmax(logits[:, -1, :], dim=-1)        # (B*K, vocab)
+
+            # 扩展 active 束的 topK，得 (B*K, K) 个新 token 与增量 logp
+            top_logp, top_idx = log_probs.topk(K, dim=-1)   # (B*K, K)
+
+            new_seqs = []      # (b, cands)，cands 是第 b 句某束扩展出的 K 个候选
+            for flat in range(B * K):
+                if not active[flat]:
+                    continue
+                b, k = divmod(flat, K)
+                row_tokens = seqs[flat].tolist()
+                cands = []
+                for j in range(K):
+                    cands.append((row_tokens + [top_idx[flat, j].item()],
+                                  cum_log_prob[flat].item() + top_logp[flat, j].item()))
+                new_seqs.append((b, cands))
+
+            next_seqs = torch.full((B * K, cur_len + 1), pad_id, dtype=torch.long, device=device)
+            next_logp = torch.full((B * K,), -1e9, device=device)
+            next_active = torch.zeros(B * K, dtype=torch.bool, device=device)
+
+            for b in range(B):
+                # 汇总第 b 句所有 active 束扩展出的候选
+                pool = []
+                for bb, cands in new_seqs:
+                    if bb == b:
+                        pool.extend(cands)
+                # 按累积 logp 降序
+                pool.sort(key=lambda x: x[1], reverse=True)
+
+                # 非 EOS 取前 K 个
+                slot = 0
+                for tokens, logp in pool:
+                    if tokens[-1] == eos_id:
+                        finished[b].append((tokens[1:-1], logp))
+                    else:
+                        if slot >= K:
+                            break
+                        if tokens[-1] != eos_id:
+                            flat = b * K + slot
+                            next_seqs[flat, :cur_len + 1] = torch.tensor(tokens, dtype=torch.long, device=device)
+                            next_logp[flat] = logp
+                            next_active[flat] = True
+                            slot += 1
+
+            seqs, cum_log_prob, active = next_seqs, next_logp, next_active
+
+    # 逐句长度归一化（Google NMT），挑每句最优序列
+    def length_norm(tokens):
+        return (6 ** alpha) / ((5 + len(tokens)) ** alpha)
+
+    results = []
+    for b in range(B):
+        # 未完成束：只用 active 的真实束（占位束 active=False 被排除；-1e9 初始分数也是双保险）
+        unfinished = [(seqs[b*K+k, 1:].tolist(), cum_log_prob[b*K+k].item())
+                      for k in range(K)
+                      if active[b*K+k] and cum_log_prob[b*K+k].item() > -1e6]
+        cands = finished[b] + unfinished
+        cands = [c for c in cands if len(c[0]) > 0]
+        if not cands:
+            results.append([eos_id])
+            continue
+        best = max(cands, key=lambda x: x[1] * length_norm(x[0]))
+        results.append(best[0])
+    return results  # list[list]，每句一个 token 序列
+
 def predict_batch(input_batch, model, zhTokenizer, enTokenizer):
     # 推理函数独立于 DDP 训练使用，自行推断设备
     device = input_batch.device
     model.eval()
     src_padding_mask = (input_batch == zhTokenizer.pad_id).to(device)
-    # 编码器只算一次：输入不变，循环内无需重复编码
+    # 编码器只算一次：输入不变，束搜索内部循环无需重复编码
     # memory size: (batch_size, seq_len, d_model)
     memory = model.encode(input_batch, src_padding_mask)
-    # 创建形状为 (batch_size, 1) 的全零张量，用作解码器初始输入（SOS token）
-    input_target = torch.full((input_batch.shape[0], 1), fill_value=enTokenizer.sos_id, dtype=torch.long).to(device)
-    generated = []
-    is_all = torch.full((input_batch.shape[0],), fill_value=False, dtype=torch.bool).to(device)
-    with torch.no_grad():
-        for i in range(config.MAX_SEQ_LEN):
-            # 自回归逐词解码，decode 输入逐步增长
-            tgt_mask = nn.Transformer.generate_square_subsequent_mask(input_target.size(1)).to(device)
-            decode_output = model.decode(input_target, tgt_mask, memory, src_padding_mask)
-            decode_output = decode_output[:, -1, :]
-            decode_output = decode_output.argmax(dim=-1) # (batch_size, )
-            generated.append(decode_output.unsqueeze(1))
-            input_target = torch.cat((input_target, decode_output.unsqueeze(1)), dim=1)
-            is_all |= decode_output.eq(enTokenizer.eos_id)
-            if torch.all(is_all):
-                break
-
-    generated = torch.cat(generated, dim=1).to(device)
-    return generated
+    results = beam_search_decode(model, memory, src_padding_mask,
+                                 enTokenizer, device, config.MAX_SEQ_LEN)
+    # 用 pad_sequence 把变长序列列表 pad 成 (batch, seq_len) 张量
+    tensors = [torch.tensor(seq, dtype=torch.long, device=device) for seq in results]
+    if tensors:
+        padded = torch.nn.utils.rnn.pad_sequence(
+            tensors, batch_first=True, padding_value=enTokenizer.pad_id)
+    else:
+        padded = torch.empty((0, 0), dtype=torch.long, device=device)
+    return padded
 
 def predict():
     # 有 GPU 用 GPU，否则回退 CPU（本地调试可用）

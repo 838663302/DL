@@ -3,7 +3,7 @@ from pathlib import Path
 # Kaggle环境检测：输入数据在/kaggle/input（只读），输出必须写到/kaggle/working
 if Path('/kaggle/input').exists():
     # 数据集实际挂载路径（线上实测）
-    BASE_DIR = Path('/kaggle/input/datasets/xiaonanhaiaichixigua/reviewdata')
+    BASE_DIR = Path('/kaggle/input/datasets/xiaonanhaiaichixigua/inputmethoddata')
     OUTPUT_DIR = Path('/kaggle/working')
 else:
     BASE_DIR = Path(__file__).parent.resolve()
@@ -22,6 +22,10 @@ WARMUP_STEPS = 2000  # Noam 调度的 warmup 步数，之后学习率按 1/sqrt(
 MODEL_PATH = OUTPUT_DIR / "model.pth"
 MAX_SEQ_LEN = 128  # 最大序列长度
 
+# 束搜索解码参数
+BEAM_SIZE = 5              # 束宽：每步保留的候选数，越大越慢但质量更高
+LENGTH_PENALTY_ALPHA = 0.6 # Google NMT 长度惩罚系数，>0 鼓励长句
+
 # 词汇表路径
 ZH_VOCAB_PATH = DATASET_DIR / "iwslt_train_zh_vocab.txt"
 EN_VOCAB_PATH = DATASET_DIR / "iwslt_train_en_vocab.txt"
@@ -37,3 +41,4 @@ NUM_DECODER_LAYERS = 3  # 解码器层数
 DIM_FEEDFORWARD = 1024  # 前馈网络维度（取 4*d_model）
 DROPOUT = 0.1  # Dropout比率
 ACTIVATION = 'relu'  # 激活函数
+INPUY_WINDOW_SIZE = 8
