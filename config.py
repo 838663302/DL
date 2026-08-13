@@ -11,9 +11,10 @@ else:
 
 DATASET_DIR = BASE_DIR / "data"
 WINDOW_SIZE = 5
-# 窗口模型极小（(batch, 8, 256)），T4 上每卡 batch 512 无显存压力；
-# DDP 下全局有效 batch = 512 * 2 = 1024
-BATCH_SIZE = 512
+# 词表 93063 极大，logits=(B,8,93063) 是显存大户：
+# B=512 时单张 logits ≈1.5GB，softmax+梯度再翻倍。B=256 安全。
+# DDP 下全局有效 batch = 256 * 2 = 512
+BATCH_SIZE = 256
 EMBEDDING_DIM = 256
 HIDDEN_SIZE = 256
 LR = 0.001  # Noam 调度的峰值学习率（warmup 结束后达到）

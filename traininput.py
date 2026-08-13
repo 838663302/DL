@@ -21,6 +21,9 @@ from tokenizer import ZHTokenizer
 
 def train(rank, world_size):
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+    # 诊断显存（Kaggle 排查 OOM 用）：打印 GPU 型号、总显存、占用
+    if torch.cuda.is_available() and rank == 0:
+        print(f"[GPU] {torch.cuda.get_device_name(rank)} | 总显存 {torch.cuda.get_device_properties(rank).total_memory / 2**30:.1f} GiB | PyTorch 已用 {torch.cuda.memory_allocated(rank) / 2**30:.2f} GiB")
     # DDP 仅在多进程且 CUDA 可用时启用；CPU 单进程直接跑裸模型
     use_ddp = torch.cuda.is_available() and world_size > 1
     zhTokenizer = ZHTokenizer.from_vocab(config.ZH_VOCAB_PATH)
@@ -82,10 +85,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=N
     for step, (batch, target) in enumerate(dataloader):
         batch = batch.to(device)
         target = target.to(device)
-        # output shape: (batch_size, window_size, vocab_size)
-        # 用窗口最后一位的 logits 预测窗口后的 target 标量
+        # output shape: (batch_size, vocab_size)，已是最后一位 token 的 logits
         output = model(batch)
-        loss = criterion(output[:, -1, :], target)
+        loss = criterion(output, target)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -105,6 +107,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=N
         #         util = "nvidia-smi 不可用"
         #     print(f"  step {step}: {util}")
 
+    if torch.cuda.is_available():
+        peak = torch.cuda.max_memory_allocated() / 2**30
+        print(f"[MEM] 本 epoch 峰值显存 {peak:.2f} GiB")
     return total_loss / num_batches if num_batches > 0 else float('inf')
 
 

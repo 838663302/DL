@@ -89,4 +89,6 @@ class InputMethod(nn.Module):
      
         decoded = self.decoder(src=embed, mask=tgt_mask,
                                src_key_padding_mask=tgt_key_padding_mask)
-        return self.linear(decoded)
+        # 只投影最后一位的 logits（(B, vocab) 而非 (B, 8, vocab)）：
+        # 词表 93063 很大，8 位全算时单张 logits 就 1.5GB(B=512)，剪掉可省 ~8 倍显存
+        return self.linear(decoded[:, -1, :])
