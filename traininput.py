@@ -37,8 +37,6 @@ def train(rank, world_size):
         d_model=config.EMBEDDING_DIM,
         zh_pad_id=zhTokenizer.pad_id
     ).to(device)
-    if use_ddp:
-        model = DDP(model, device_ids=[rank])
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
     criterion = nn.CrossEntropyLoss(ignore_index=zhTokenizer.pad_id)
     # Noam 调度：先线性 warmup 上升，再按 1/sqrt(step) 缓慢衰减。
@@ -55,14 +53,41 @@ def train(rank, world_size):
         scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
     except TypeError:
         scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+    # 断点续训：本地存在 best_model.pth 时恢复 模型+优化器+调度器+scaler，
+    # 保证 LR 曲线无缝衔接（不重走 warmup）。必须在 DDP 包装之前 load，
+    # 否则 state_dict 会带 module. 前缀导致键不匹配
+    resume_path = os.path.join(config.CHECKPOINT_DIR, "best_model.pth")
+    start_epoch = 0
     loss_value = float("inf")
+    if os.path.exists(resume_path):
+        ckpt = torch.load(resume_path, map_location=device)
+        # 完整 checkpoint 的键：model/optimizer/scheduler/scaler/epoch/best_loss
+        if isinstance(ckpt, dict) and "model" in ckpt and "optimizer" in ckpt and "scheduler" in ckpt:
+            model.load_state_dict(ckpt["model"])
+            optimizer.load_state_dict(ckpt["optimizer"])
+            scheduler.load_state_dict(ckpt["scheduler"])
+            if "scaler" in ckpt:
+                scaler.load_state_dict(ckpt["scaler"])
+            start_epoch = int(ckpt.get("epoch", -1)) + 1
+            loss_value = float(ckpt.get("best_loss", float("inf")))
+            if rank == 0:
+                print(f"[RESUME] 已恢复权重+优化器+调度器，从 Epoch {start_epoch+1} 继续（历史最佳 loss {loss_value:.4f}）")
+        else:
+            # 旧格式：纯 model state_dict（dict[str, Tensor]），只恢复权重
+            model.load_state_dict(ckpt)
+            if rank == 0:
+                print("[RESUME] 检测到旧格式权重，已加载模型（LR 将重新走 warmup）")
+    elif rank == 0:
+        print("[RESUME] 未找到已有权重，从头开始训练")
+    if use_ddp:
+        model = DDP(model, device_ids=[rank])
 
     # 只在 rank=0 创建 TensorBoard writer，避免两个进程重复写日志目录
     writer = SummaryWriter(log_dir=config.OUTPUT_DIR / "runs") if rank == 0 else None
     import time
     epoch_times = []
 
-    for epoch in range(config.EPOCHS):
+    for epoch in range(start_epoch, config.EPOCHS):
         # 每个 epoch 重新打乱数据（仅 DDP 的 DistributedSampler 需要 set_epoch）
         if hasattr(dataloader.sampler, "set_epoch"):
             dataloader.sampler.set_epoch(epoch)
@@ -79,9 +104,18 @@ def train(rank, world_size):
         if loss_value > loss_batch:
             loss_value = loss_batch
             if rank == 0:
-                # DDP 包装后取内部模型保存，避免保存带 module. 前缀的状态字典
+                # DDP 包装后取内部模型保存，避免保存带 module. 前缀的状态字典；
+                # 连同 optimizer/scheduler/scaler 一起存，便于断点续训时 LR 曲线无缝衔接
                 state_dict = model.module.state_dict() if isinstance(model, DDP) else model.state_dict()
-                torch.save(state_dict, os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
+                ckpt = {
+                    "model": state_dict,
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "scaler": scaler.state_dict(),
+                    "epoch": epoch,
+                    "best_loss": loss_value,
+                }
+                torch.save(ckpt, os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
 
     if rank == 0 and epoch_times:
         avg_min = sum(epoch_times) / len(epoch_times) / 60
