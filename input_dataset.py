@@ -24,14 +24,25 @@ class InputDataset(Dataset):
 
 def get_dataloader(batch_size, shuffle, is_train=True, rank=None, world_size=None, num_workers=None):
     if num_workers is None:
-        # Windows 下多进程 DataLoader worker 需要 __main__ 保护，默认 0；
-        # Linux/Kaggle 下用 4 个子进程并行加载，掩盖 200 万样本的加载延迟
-        num_workers = 0 if os.name == "nt" else 4
+        # 数据集已整体预载入内存张量，worker 只做切片+collate，本身很轻。
+        # 关键是不能开太多：Kaggle 等环境 CPU 核少，DDP 下进程总数 = ranks*(workers+1)，
+        # 开多了进程调度互相争抢反而拖慢训练。按核数/进程数自适应分配。
+        if os.name == "nt":
+            # Windows 下多进程 DataLoader worker 需要 __main__ 保护，默认 0；
+            num_workers = 0
+        else:
+            total_cores = os.cpu_count() or 2
+            if world_size:
+                num_workers = max(1, min(2, total_cores // world_size))
+            else:
+                num_workers = max(1, min(2, total_cores // 2))
     # num_workers>0 时启用常驻 worker 与预取：worker 不随 epoch 销毁重建，
     # 每个 worker 预取 2 个 batch，隐藏加载延迟
     loader_kwargs = {}
     if num_workers > 0:
         loader_kwargs = dict(persistent_workers=True, prefetch_factor=2)
+        if torch.cuda.is_available():
+            loader_kwargs["pin_memory"] = True
     if is_train:
         file_path = config.DATASET_DIR / "iwslt_train_tokenized_input.jsonl"
     else:
