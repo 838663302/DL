@@ -19,7 +19,7 @@ EMBEDDING_DIM = 256
 HIDDEN_SIZE = 256
 LR = 0.001  # Noam 调度的峰值学习率（warmup 结束后达到）
 # 200 万条滑窗样本高度重叠，50 轮过拟合；15 轮足够收敛
-EPOCHS = 1
+EPOCHS = 20
 WARMUP_STEPS = 2000  # Noam 调度的 warmup 步数，之后学习率按 1/sqrt(step) 缓慢衰减
 MODEL_PATH = OUTPUT_DIR / "model.pth"
 MAX_SEQ_LEN = 128  # 最大序列长度
