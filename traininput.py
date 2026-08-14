@@ -19,26 +19,61 @@ from datetime import datetime
 from tokenizer import ZHTokenizer
 
 
-def train(rank, world_size):
-    device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
-    # 诊断显存（Kaggle 排查 OOM 用）：打印 GPU 型号、总显存、占用
-    if torch.cuda.is_available() and rank == 0:
-        print(f"[GPU] {torch.cuda.get_device_name(rank)} | 总显存 {torch.cuda.get_device_properties(rank).total_memory / 2**30:.1f} GiB | PyTorch 已用 {torch.cuda.memory_allocated(rank) / 2**30:.2f} GiB")
-    # DDP 仅在多进程且 CUDA 可用时启用；CPU 单进程直接跑裸模型
-    use_ddp = torch.cuda.is_available() and world_size > 1
-    zhTokenizer = ZHTokenizer.from_vocab(config.ZH_VOCAB_PATH)
-    dataloader = get_dataloader(
-        batch_size=config.BATCH_SIZE, shuffle=True, is_train=True,
-        rank=rank if use_ddp else None,
-        world_size=world_size if use_ddp else None
-    )
+def load_checkpoint(device=None, ckpt_name="best_model.pth"):
+    """读取 checkpoint 文件，只返回权重和断点数值，不构建/加载模型。
+
+    返回 dict 或 None：
+        None     : 文件不存在
+        完整格式 : {
+            "format": "full", model, optimizer, scheduler, scaler,
+            start_epoch, best_loss
+        }
+        旧格式   : {
+            "format": "old", model(纯 state_dict),
+            optimizer=None, scheduler=None, scaler=None,
+            start_epoch=0, best_loss=inf
+        }
+    模型构建与状态恢复由调用方完成。
+    """
+    if device is None:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    resume_path = os.path.join(config.CHECKPOINT_DIR, ckpt_name)
+    if not os.path.exists(resume_path):
+        return None
+
+    ckpt = torch.load(resume_path, map_location=device)
+    # 完整 checkpoint 的键：model/optimizer/scheduler/scaler/epoch/best_loss
+    if isinstance(ckpt, dict) and "model" in ckpt:
+        return {
+            "format": "full",
+            "model": ckpt["model"],
+            "optimizer": ckpt.get("optimizer"),
+            "scheduler": ckpt.get("scheduler"),
+            "scaler": ckpt.get("scaler"),
+            "start_epoch": int(ckpt.get("epoch", -1)) + 1,
+            "best_loss": float(ckpt.get("best_loss", float("inf"))),
+        }
+    # 旧格式：纯 model state_dict（dict[str, Tensor]）
+    return {
+        "format": "old",
+        "model": ckpt,
+        "optimizer": None,
+        "scheduler": None,
+        "scaler": None,
+        "start_epoch": 0,
+        "best_loss": float("inf"),
+    }
+
+
+def build_training_components(device):
+    """构建训练所需组件：分词器、模型、优化器、Noam 调度器、混合精度缩放器"""
+    tokenizer = ZHTokenizer.from_vocab(config.ZH_VOCAB_PATH)
     model = InputMethod(
-        zh_vocab_size=zhTokenizer.vocab_size,
+        zh_vocab_size=tokenizer.vocab_size,
         d_model=config.EMBEDDING_DIM,
-        zh_pad_id=zhTokenizer.pad_id
+        zh_pad_id=tokenizer.pad_id
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
-    criterion = nn.CrossEntropyLoss(ignore_index=zhTokenizer.pad_id)
     # Noam 调度：先线性 warmup 上升，再按 1/sqrt(step) 缓慢衰减。
     # 相比 ExponentialLR 每 epoch 乘 0.94（后期学习率太小导致 loss 停滞），
     # 后期仍有足够学习能力，更适合大模型长时间训练
@@ -53,32 +88,46 @@ def train(rank, world_size):
         scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
     except TypeError:
         scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
-    # 断点续训：本地存在 best_model.pth 时恢复 模型+优化器+调度器+scaler，
-    # 保证 LR 曲线无缝衔接（不重走 warmup）。必须在 DDP 包装之前 load，
-    # 否则 state_dict 会带 module. 前缀导致键不匹配
-    resume_path = os.path.join(config.CHECKPOINT_DIR, "best_model.pth")
+    return tokenizer, model, optimizer, scheduler, scaler
+
+
+def train(rank, world_size):
+    device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+    # 诊断显存（Kaggle 排查 OOM 用）：打印 GPU 型号、总显存、占用
+    if torch.cuda.is_available() and rank == 0:
+        print(f"[GPU] {torch.cuda.get_device_name(rank)} | 总显存 {torch.cuda.get_device_properties(rank).total_memory / 2**30:.1f} GiB | PyTorch 已用 {torch.cuda.memory_allocated(rank) / 2**30:.2f} GiB")
+    # DDP 仅在多进程且 CUDA 可用时启用；CPU 单进程直接跑裸模型
+    use_ddp = torch.cuda.is_available() and world_size > 1
+    # 构建模型/分词器/优化器/调度器/缩放器
+    zhTokenizer, model, optimizer, scheduler, scaler = build_training_components(device)
+
+    # 断点续训：读取 checkpoint 权重（必须在 DDP 包装之前加载，
+    # 否则 state_dict 会带 module. 前缀导致键不匹配），恢复训练状态
     start_epoch = 0
     loss_value = float("inf")
-    if os.path.exists(resume_path):
-        ckpt = torch.load(resume_path, map_location=device)
-        # 完整 checkpoint 的键：model/optimizer/scheduler/scaler/epoch/best_loss
-        if isinstance(ckpt, dict) and "model" in ckpt and "optimizer" in ckpt and "scheduler" in ckpt:
-            model.load_state_dict(ckpt["model"])
-            optimizer.load_state_dict(ckpt["optimizer"])
-            scheduler.load_state_dict(ckpt["scheduler"])
-            if "scaler" in ckpt:
-                scaler.load_state_dict(ckpt["scaler"])
-            start_epoch = int(ckpt.get("epoch", -1)) + 1
-            loss_value = float(ckpt.get("best_loss", float("inf")))
+    ckpt_data = load_checkpoint(device=device, ckpt_name="best_model.pth")
+    if ckpt_data is not None:
+        model.load_state_dict(ckpt_data["model"])
+        if ckpt_data["format"] == "full" and ckpt_data["optimizer"] is not None:
+            optimizer.load_state_dict(ckpt_data["optimizer"])
+            scheduler.load_state_dict(ckpt_data["scheduler"])
+            if ckpt_data["scaler"] is not None:
+                scaler.load_state_dict(ckpt_data["scaler"])
+            start_epoch = ckpt_data["start_epoch"]
+            loss_value = ckpt_data["best_loss"]
             if rank == 0:
                 print(f"[RESUME] 已恢复权重+优化器+调度器，从 Epoch {start_epoch+1} 继续（历史最佳 loss {loss_value:.4f}）")
-        else:
-            # 旧格式：纯 model state_dict（dict[str, Tensor]），只恢复权重
-            model.load_state_dict(ckpt)
-            if rank == 0:
-                print("[RESUME] 检测到旧格式权重，已加载模型（LR 将重新走 warmup）")
+        elif rank == 0:
+            print("[RESUME] 检测到旧格式权重，已加载模型（LR 将重新走 warmup）")
     elif rank == 0:
         print("[RESUME] 未找到已有权重，从头开始训练")
+
+    dataloader = get_dataloader(
+        batch_size=config.BATCH_SIZE, shuffle=True, is_train=True,
+        rank=rank if use_ddp else None,
+        world_size=world_size if use_ddp else None
+    )
+    criterion = nn.CrossEntropyLoss(ignore_index=zhTokenizer.pad_id)
     if use_ddp:
         model = DDP(model, device_ids=[rank])
 
@@ -153,6 +202,60 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=N
         print(f"[MEM] 本 epoch 峰值显存 {peak:.2f} GiB")
     return total_loss / num_batches if num_batches > 0 else float('inf')
 
+def predict(input_str, model, tokenizer, device):
+    ids = tokenizer.encode(input_str)
+    if not ids:
+        print(f"输入为空: {input_str}")
+        return []
+    ids = ids[-config.MAX_SEQ_LEN:]
+    input_batch = torch.tensor(ids, dtype=torch.long).unsqueeze(0)
+    topk_values, topk_indices = predict_batch(input_batch, model, device)
+
+    indices = topk_indices[0].tolist()
+    # print(f"输入: {input_str}")
+    words = [tokenizer.id2word[idx] for idx in indices]
+    # for idx, word in zip(indices, words):
+    #     print(f"  {word} ({idx})")
+    return words
+
+def predict_batch(input_batch, model, device):
+    model.eval()
+    
+    input_batch = input_batch.to(device)
+    with torch.no_grad():
+        with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+            output = model(input_batch)
+        topk_values, topk_indices = torch.topk(output, k=5, dim=1)
+    return topk_values, topk_indices
+
+def run():
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    ckpt_data = load_checkpoint(device=device)
+    if ckpt_data is None:
+        print("[PREDICT] 未找到 best_model.pth，请先训练！")
+        exit(1)
+    tokenizer = ZHTokenizer.from_vocab(config.ZH_VOCAB_PATH)
+    model = InputMethod(
+        zh_vocab_size=tokenizer.vocab_size,
+        d_model=config.EMBEDDING_DIM,
+        zh_pad_id=tokenizer.pad_id
+    ).to(device)
+    model.load_state_dict(ckpt_data["model"])
+
+    # 循环输入：每次输入一句中文，预测下一个词的 top-5 候选
+    print("输入法预测已就绪，输入中文后回车查看候选词（输入 q / quit / exit 退出）")
+    while True:
+        try:
+            text = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n再见！")
+            break
+        if not text:
+            continue
+        if text.lower() in ("q", "quit", "exit"):
+            break
+        words = predict(text, model, tokenizer, device)
+        print(words)
 
 def init_process(rank, world_size, fn):
     """每个子进程的入口：初始化进程组、设置设备、运行训练、销毁进程组"""
@@ -165,10 +268,12 @@ def init_process(rank, world_size, fn):
     dist.destroy_process_group()
 
 if __name__ == "__main__":
-    if torch.cuda.is_available() and torch.cuda.device_count() >= 2:
-        world_size = torch.cuda.device_count()
-        print(f"使用 {world_size} 张 GPU 进行 DDP 训练")
-        mp.spawn(init_process, args=(world_size, train), nprocs=world_size)
-    else:
-        print("未检测到多卡 GPU，单进程 CPU 训练")
-        train(rank=0, world_size=1)
+    # if torch.cuda.is_available() and torch.cuda.device_count() >= 2:
+    #     world_size = torch.cuda.device_count()
+    #     print(f"使用 {world_size} 张 GPU 进行 DDP 训练")
+    #     mp.spawn(init_process, args=(world_size, train), nprocs=world_size)
+    # else:
+    #     print("未检测到多卡 GPU，单进程 CPU 训练")
+    #     train(rank=0, world_size=1)
+    run()
+    

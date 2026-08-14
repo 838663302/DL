@@ -37,7 +37,7 @@ EN_VOCAB_PATH = DATASET_DIR / "iwslt_train_en_vocab.txt"
 
 # 检查点目录：直接使用输出根目录，不再单独建 checkpoints 子目录
 CHECKPOINT_DIR = OUTPUT_DIR
-CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+# CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Transformer模型参数
 NHEAD = 8  # 多头注意力头数（d_model=256 时每头 32 维，必须整除 d_model）
