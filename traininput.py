@@ -59,14 +59,19 @@ def train(rank, world_size):
 
     # 只在 rank=0 创建 TensorBoard writer，避免两个进程重复写日志目录
     writer = SummaryWriter(log_dir=config.OUTPUT_DIR / "runs") if rank == 0 else None
+    import time
+    epoch_times = []
 
     for epoch in range(config.EPOCHS):
         # 每个 epoch 重新打乱数据（仅 DDP 的 DistributedSampler 需要 set_epoch）
         if hasattr(dataloader.sampler, "set_epoch"):
             dataloader.sampler.set_epoch(epoch)
+        t0 = time.time()
         loss_batch = train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler, scaler)
+        elapsed = time.time() - t0
+        epoch_times.append(elapsed)
         if rank == 0:
-            print(f"Epoch {epoch+1}, Loss: {loss_batch}")
+            print(f"Epoch {epoch+1}, Loss: {loss_batch}, 耗时 {elapsed/60:.1f} 分钟")
             # 记录每个 epoch 的平均损失和学习率
             writer.add_scalar("loss/train", loss_batch, epoch)
             writer.add_scalar("lr", scheduler.get_last_lr()[0], epoch)
@@ -77,6 +82,10 @@ def train(rank, world_size):
                 # DDP 包装后取内部模型保存，避免保存带 module. 前缀的状态字典
                 state_dict = model.module.state_dict() if isinstance(model, DDP) else model.state_dict()
                 torch.save(state_dict, os.path.join(config.CHECKPOINT_DIR, "best_model.pth"))
+
+    if rank == 0 and epoch_times:
+        avg_min = sum(epoch_times) / len(epoch_times) / 60
+        print(f"训练完成，共 {len(epoch_times)} 轮，平均每轮 {avg_min:.1f} 分钟")
 
     if writer is not None:
         writer.close()
