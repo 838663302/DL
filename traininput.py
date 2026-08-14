@@ -83,7 +83,7 @@ def train(rank, world_size):
         model = DDP(model, device_ids=[rank])
 
     # 只在 rank=0 创建 TensorBoard writer，避免两个进程重复写日志目录
-    writer = SummaryWriter(log_dir=config.OUTPUT_DIR / "runs") if rank == 0 else None
+    writer = SummaryWriter(log_dir=str(config.OUTPUT_DIR / "logs" / datetime.now().strftime('%Y%m%d_%H%M%S'))) if rank == 0 else None
     import time
     epoch_times = []
 
